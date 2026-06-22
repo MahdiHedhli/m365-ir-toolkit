@@ -34,6 +34,7 @@ param(
     [datetime]$StartDate = (Get-Date).AddDays(-180),
     [datetime]$EndDate   = (Get-Date),
     [switch]$SkipEnrichment,
+    [string]$ConnectAs,           # admin UPN to sign in as; skips Connect-ExchangeOnline's console email prompt
     [string]$OutputFolder
 )
 
@@ -60,8 +61,17 @@ function Normalize-IP([string]$ip) {
 Write-Section "Connecting"
 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
-Connect-MgGraph -Scopes "AuditLog.Read.All","Directory.Read.All" -NoWelcome
-Connect-ExchangeOnline -ShowBanner:$false
+$weOpenedGraph = $false; $weOpenedExo = $false
+if (-not (Get-MgContext)) {
+    Connect-MgGraph -Scopes "AuditLog.Read.All","Directory.Read.All" -NoWelcome
+    $weOpenedGraph = $true
+} else { Write-Host "  Reusing Graph session: $((Get-MgContext).Account)" }
+$exoConn = $null; try { $exoConn = Get-ConnectionInformation -ErrorAction SilentlyContinue } catch {}
+if (-not $exoConn) {
+    if ($ConnectAs) { Connect-ExchangeOnline -UserPrincipalName $ConnectAs -ShowBanner:$false }
+    else                    { Connect-ExchangeOnline -ShowBanner:$false }
+    $weOpenedExo = $true
+} else { Write-Host "  Reusing Exchange Online session: $($exoConn.UserPrincipalName)" }
 try {
     if (-not (Get-AdminAuditLogConfig).UnifiedAuditLogIngestionEnabled) {
         Write-Warning "Unified audit log ingestion is DISABLED - historical data may be missing."
@@ -265,5 +275,5 @@ Write-Host "  account_ASN_rollup.csv   <- IPs grouped by AS (the malicious AS + 
 Write-Host "`nNext: take hosting-AS sibling IPs from the rollup and sweep org-wide:" -ForegroundColor DarkYellow
 Write-Host "  .\Find-OrgAccessFromIP.ps1 -SuspectIP <ip1>,<ip2>,... -StartDate '$($StartDate.ToString('yyyy-MM-dd'))' -EndDate '$($EndDate.ToString('yyyy-MM-dd'))'" -ForegroundColor DarkYellow
 
-Disconnect-ExchangeOnline -Confirm:$false | Out-Null
-Disconnect-MgGraph | Out-Null
+if ($weOpenedExo)   { Disconnect-ExchangeOnline -Confirm:$false | Out-Null }
+if ($weOpenedGraph) { Disconnect-MgGraph | Out-Null }

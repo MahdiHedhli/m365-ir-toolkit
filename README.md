@@ -92,7 +92,7 @@ Take the hosting-AS sibling IPs the rollup reveals and run the org-wide sweep ag
 
 That turns "which accounts did this *IP* touch" into "which accounts did this *actor* touch."
 
-Full decision tree and containment steps: [docs/account-compromise.md](docs/account-compromise.md).
+Full decision tree: [docs/account-compromise.md](docs/account-compromise.md). Step-by-step containment runbook: [docs/containment-checklist.md](docs/containment-checklist.md).
 
 ## The retention trap (read this)
 
@@ -109,7 +109,7 @@ So you can prove *that* an IP signed in and *what* it did (rules created, files 
 
 ## Safety & scope
 
-- **Read-only.** These scripts collect; they make no changes. Containment — revoking sessions, resetting credentials, removing attacker MFA/rules, Conditional Access — is deliberately *not* automated. Do it through your own admin process. See the playbook.
+- **Read-only.** These scripts collect; they make no changes. Containment — revoking sessions, resetting credentials, removing attacker MFA/rules, Conditional Access — is deliberately *not* automated. Do it through your own admin process — see the [containment checklist](docs/containment-checklist.md).
 - **Enrichment uses a third party.** `Get-AccountIPReport.ps1` sends observed IPs — including users' own — to ip-api.com for ASN/geo. Use `-SkipEnrichment` for privacy-sensitive or regulated tenants, or swap in an offline GeoIP database.
 - **Output contains client data.** Generated CSV folders are git-ignored by default. Keep raw `*_RAW.csv` evidence untouched and analyze on copies.
 - **Verify against your environment.** Microsoft renames products and changes retention; confirm specifics for the tenant you're working.

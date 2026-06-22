@@ -35,6 +35,7 @@ param(
     [Parameter(Mandatory)][string]$UserPrincipalName,
     [datetime]$StartDate = (Get-Date).AddDays(-180),   # UAL retention ceiling at Standard
     [datetime]$EndDate   = (Get-Date),
+    [string]$ConnectAs,           # admin UPN to sign in as; skips Connect-ExchangeOnline's console email prompt
     [string]$OutputFolder
 )
 
@@ -62,8 +63,21 @@ $SuspectIPNorm = Normalize-IP $SuspectIP
 Write-Section "Connecting"
 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
-Connect-MgGraph -Scopes "AuditLog.Read.All","Directory.Read.All","UserAuthenticationMethod.Read.All" -NoWelcome
-Connect-ExchangeOnline -ShowBanner:$false
+$gScopes = @("AuditLog.Read.All","Directory.Read.All","UserAuthenticationMethod.Read.All")
+$weOpenedGraph = $false; $weOpenedExo = $false
+$ctx = Get-MgContext
+if (-not $ctx) {
+    Connect-MgGraph -Scopes $gScopes -NoWelcome
+    $weOpenedGraph = $true
+} elseif (@($gScopes | Where-Object { $_ -notin $ctx.Scopes }).Count -gt 0) {
+    Connect-MgGraph -Scopes $gScopes -NoWelcome   # top up missing scopes (e.g. MFA read) on an existing session
+} else { Write-Host "  Reusing Graph session: $($ctx.Account)" }
+$exoConn = $null; try { $exoConn = Get-ConnectionInformation -ErrorAction SilentlyContinue } catch {}
+if (-not $exoConn) {
+    if ($ConnectAs) { Connect-ExchangeOnline -UserPrincipalName $ConnectAs -ShowBanner:$false }
+    else                    { Connect-ExchangeOnline -ShowBanner:$false }
+    $weOpenedExo = $true
+} else { Write-Host "  Reusing Exchange Online session: $($exoConn.UserPrincipalName)" }
 
 # Confirm auditing is actually on, or every UAL search silently returns nothing.
 try {
@@ -264,5 +278,5 @@ Write-Host "  ual_by_ip_RAW.csv / ual_by_user_RAW.csv  <- full AuditData JSON (e
 Write-Host "  inbox_rules_current.csv / mfa_methods_current.csv"
 Write-Host "`nReminder: empty sign-in results before ~30 days = expired logs, not a clean period. The UAL pull is your May source." -ForegroundColor DarkYellow
 
-Disconnect-ExchangeOnline -Confirm:$false | Out-Null
-Disconnect-MgGraph | Out-Null
+if ($weOpenedExo)   { Disconnect-ExchangeOnline -Confirm:$false | Out-Null }
+if ($weOpenedGraph) { Disconnect-MgGraph | Out-Null }

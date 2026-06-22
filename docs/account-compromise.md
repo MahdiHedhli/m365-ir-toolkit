@@ -49,7 +49,7 @@ This catches accounts hit from *other* addresses in the same rented infrastructu
 
 ## 5 — Contain (your admin process — not automated here)
 
-For each confirmed-accessed account:
+Full step-by-step runbook: **[containment-checklist.md](containment-checklist.md)** — block sign-in, then work the survives-a-reset persistence list (MFA, OAuth, forwarding, rules, delegation), then verify it held. The essentials, for each confirmed-accessed account:
 
 - Revoke sign-in sessions / refresh tokens.
 - Reset the password.

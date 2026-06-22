@@ -23,6 +23,11 @@
     .\Find-OrgAccessFromIP.ps1 -SuspectIP 185.174.101.58 -StartDate '2026-05-01' -EndDate '2026-06-22'
     # Whole AS-sibling set from Get-AccountIPReport.ps1's ASN rollup (catches rotation):
     .\Find-OrgAccessFromIP.ps1 -SuspectIP 185.174.101.58,185.174.101.91,185.174.102.7 -StartDate '2026-05-01' -EndDate '2026-06-22'
+
+.NOTE ON SIGN-IN
+    If Connect-ExchangeOnline keeps prompting for an email at the console, pass -ConnectAs
+    admin@tenant.com to go straight to browser auth. If you've already run Connect-MgGraph /
+    Connect-ExchangeOnline in this session, the script reuses those sessions and won't prompt at all.
 #>
 
 [CmdletBinding()]
@@ -30,6 +35,7 @@ param(
     [Parameter(Mandatory)][string[]]$SuspectIP,   # one or many - pass the whole AS-sibling set to catch rotation
     [datetime]$StartDate = (Get-Date).AddDays(-180),
     [datetime]$EndDate   = (Get-Date),
+    [string]$ConnectAs,           # admin UPN to sign in as; skips Connect-ExchangeOnline's console email prompt
     [string]$OutputFolder
 )
 
@@ -49,12 +55,21 @@ function Normalize-IP([string]$ip) {
 }
 $IPs = @($SuspectIP | ForEach-Object { Normalize-IP $_ } | Where-Object { $_ } | Select-Object -Unique)
 
-# --- Connect ---------------------------------------------------------------
+# --- Connect (reuse existing sessions; -ConnectAs skips EXO's console email prompt) ---
 Write-Section "Connecting"
 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
-Connect-MgGraph -Scopes "AuditLog.Read.All","Directory.Read.All" -NoWelcome
-Connect-ExchangeOnline -ShowBanner:$false
+$weOpenedGraph = $false; $weOpenedExo = $false
+if (-not (Get-MgContext)) {
+    Connect-MgGraph -Scopes "AuditLog.Read.All","Directory.Read.All" -NoWelcome
+    $weOpenedGraph = $true
+} else { Write-Host "  Reusing Graph session: $((Get-MgContext).Account)" }
+$exoConn = $null; try { $exoConn = Get-ConnectionInformation -ErrorAction SilentlyContinue } catch {}
+if (-not $exoConn) {
+    if ($ConnectAs) { Connect-ExchangeOnline -UserPrincipalName $ConnectAs -ShowBanner:$false }
+    else                    { Connect-ExchangeOnline -ShowBanner:$false }
+    $weOpenedExo = $true
+} else { Write-Host "  Reusing Exchange Online session: $($exoConn.UserPrincipalName)" }
 try {
     if (-not (Get-AdminAuditLogConfig).UnifiedAuditLogIngestionEnabled) {
         Write-Warning "Unified audit log ingestion is DISABLED — historical data may be missing."
@@ -207,5 +222,5 @@ Write-Host "  ORG_IP_all_events.csv     <- every event from the IP, all users, c
 Write-Host "  ORG_IP_ual_RAW.csv / ORG_IP_signins_RAW.csv  <- evidence (full detail)"
 Write-Host "`nReminder: sign-ins cover only ~30 days; the UAL pull is what reveals May-era access across the org." -ForegroundColor DarkYellow
 
-Disconnect-ExchangeOnline -Confirm:$false | Out-Null
-Disconnect-MgGraph | Out-Null
+if ($weOpenedExo)   { Disconnect-ExchangeOnline -Confirm:$false | Out-Null }
+if ($weOpenedGraph) { Disconnect-MgGraph | Out-Null }
