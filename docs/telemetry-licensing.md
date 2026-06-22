@@ -22,14 +22,16 @@ If you instead have **Microsoft Sentinel** or **Defender XDR Advanced Hunting**,
 | Directory audit (consent, role adds, MFA reg) | Entra Free+ | Graph `auditLogs/directoryAudits` | 7 d (Free), 30 d (P1/P2) |
 | **Unified Audit Log** (all workloads, has client IP) | Purview Audit **Standard** (most M365) | Exchange `Search-UnifiedAuditLog` | **~180 d** (Standard) |
 | Risk signals (`RiskState`, `RiskLevelDuringSignIn`, risky users) | Entra ID **P2** (Identity Protection) | — (not populated at P1) | n/a at P1 |
-| `MailItemsAccessed` (which mail was read) | **E5 / Audit Premium** | — (not present at BP) | n/a at BP |
+| `MailItemsAccessed` (which mail was read) | Purview Audit **Standard** (moved from Premium; rolled out 2024, all commercial customers by May 2024) | Exchange `Search-UnifiedAuditLog` | **~180 d** (Standard) — never retroactive |
+
+> **`MailItemsAccessed` is now Audit (Standard).** It was historically E5 / Audit (Premium) only, but Microsoft moved the formerly-Premium audit events — `MailItemsAccessed` among them — into Audit (Standard); rollout reached Standard license holders during 2024 (preview ~June 2024), and as of May 2024 the expanded logs were available to all worldwide commercial customers (E3/G3 and above auto-enabled). Business Premium ships Audit (Standard), so `MailItemsAccessed` is typically retrievable there via `Search-UnifiedAuditLog`, including folder-bind records carrying `InternetMessageId` and `Subject`. Caveats: it must be in the mailbox's audit set (auto-enabled unless a custom mailbox audit configuration was applied — re-apply the default set if so), and it is **never retroactive**. Field confusion persists and some SKUs (e.g. Business Basic) are described as lacking it — verify per tenant.
 
 ## What you can pull, by tier
 
 | Tier | With these scripts |
 | --- | --- |
 | **Entra Free** (base Business Basic/Standard) | UAL (~180 d) + 7-day sign-ins; no risk; no Device/Identity/Email tables anywhere |
-| **Business Premium** (Entra P1, Defender for Business, MDO P1) | UAL (~180 d) + 30-day sign-ins incl. non-interactive + directory audit. **No** risk scoring (P2), **no** `MailItemsAccessed` (E5) |
+| **Business Premium** (Entra P1, Defender for Business, MDO P1) | UAL (~180 d) incl. `MailItemsAccessed` (Audit Standard — see note above) + 30-day sign-ins incl. non-interactive + directory audit. **No** risk scoring (P2). |
 | **+ Defender Suite / E5 Security**, or **E5** | All of the above **plus** Entra P2 risk and the full Defender XDR KQL surface → switch to the [KQL playbook](https://github.com/MahdiHedhli/cloud-threat-hunting-playbook) |
 
 ## Reading an empty result
@@ -42,3 +44,8 @@ Four causes, ruled out in order:
 4. **Nothing happened.**
 
 Only the fourth is clean. The first three are blind spots.
+
+## Sources
+
+- Microsoft Learn — "Use `MailItemsAccessed` to investigate compromised accounts" (now classes it as Audit (Standard) functionality).
+- CISA — "Microsoft Expanded Cloud Logs Implementation Playbook" (expanded logs available to all worldwide commercial customers as of May 2024).

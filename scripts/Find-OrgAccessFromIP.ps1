@@ -25,7 +25,7 @@
     .\Find-OrgAccessFromIP.ps1 -SuspectIP 185.174.101.58,185.174.101.91,185.174.102.7 -StartDate '2026-05-01' -EndDate '2026-06-22'
 
 .NOTE ON SIGN-IN
-    If Connect-ExchangeOnline keeps prompting for an email at the console, pass -ConnectAs
+    If Connect-ExchangeOnline keeps prompting for an email at the console, pass -AdminUpn
     admin@tenant.com to go straight to browser auth. If you've already run Connect-MgGraph /
     Connect-ExchangeOnline in this session, the script reuses those sessions and won't prompt at all.
 #>
@@ -35,7 +35,7 @@ param(
     [Parameter(Mandatory)][string[]]$SuspectIP,   # one or many - pass the whole AS-sibling set to catch rotation
     [datetime]$StartDate = (Get-Date).AddDays(-180),
     [datetime]$EndDate   = (Get-Date),
-    [string]$ConnectAs,           # admin UPN to sign in as; skips Connect-ExchangeOnline's console email prompt
+    [string]$AdminUpn,   # admin UPN to authenticate as; skips Connect-ExchangeOnline's console email prompt
     [string]$OutputFolder
 )
 
@@ -55,7 +55,7 @@ function Normalize-IP([string]$ip) {
 }
 $IPs = @($SuspectIP | ForEach-Object { Normalize-IP $_ } | Where-Object { $_ } | Select-Object -Unique)
 
-# --- Connect (reuse existing sessions; -ConnectAs skips EXO's console email prompt) ---
+# --- Connect (reuse existing sessions; -AdminUpn skips EXO's console email prompt) ---
 Write-Section "Connecting"
 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
@@ -66,8 +66,8 @@ if (-not (Get-MgContext)) {
 } else { Write-Host "  Reusing Graph session: $((Get-MgContext).Account)" }
 $exoConn = $null; try { $exoConn = Get-ConnectionInformation -ErrorAction SilentlyContinue } catch {}
 if (-not $exoConn) {
-    if ($ConnectAs) { Connect-ExchangeOnline -UserPrincipalName $ConnectAs -ShowBanner:$false }
-    else                    { Connect-ExchangeOnline -ShowBanner:$false }
+    if ($AdminUpn) { Connect-ExchangeOnline -UserPrincipalName $AdminUpn -ShowBanner:$false }
+    else           { Connect-ExchangeOnline -ShowBanner:$false }
     $weOpenedExo = $true
 } else { Write-Host "  Reusing Exchange Online session: $($exoConn.UserPrincipalName)" }
 try {
@@ -90,7 +90,7 @@ function Get-Bucket($user) {
     if (-not $agg.ContainsKey($k)) {
         $agg[$k] = [pscustomobject]@{
             User = $user; FirstSeen = $null; LastSeen = $null
-            SuccessSignIns = 0; FailedSignIns = 0; UALEvents = 0
+            SuccessSignIns = 0; FailedSignIns = 0; UALEvents = 0; MailReadEvents = 0
             Workloads  = New-Object 'System.Collections.Generic.HashSet[string]'
             Operations = New-Object 'System.Collections.Generic.HashSet[string]'
         }
@@ -136,6 +136,43 @@ foreach ($r in $ualRaw) {
         Workload=$a.Workload; Operation=$a.Operation; Result='' })
 }
 
+# --- 1b) MailItemsAccessed org-wide BY OPERATION, filtered to suspect IPs in post ---
+# -IPAddresses does NOT return MailItemsAccessed, so pull by operation and match ClientIP here.
+Write-Section "MailItemsAccessed (org-wide by operation, filtered to suspect IPs)"
+$sidM = [guid]::NewGuid().ToString()
+$miaRaw = New-Object System.Collections.Generic.List[object]
+$pageM = 0
+do {
+    $pageM++
+    $batchM = Search-UnifiedAuditLog -StartDate $StartDate -EndDate $EndDate -Operations MailItemsAccessed `
+                -SessionId $sidM -SessionCommand ReturnLargeSet -ResultSize 5000
+    $nM = ($batchM | Measure-Object).Count
+    foreach ($r in $batchM) {
+        $a = $null; try { $a = $r.AuditData | ConvertFrom-Json } catch { }
+        if (-not $a) { continue }
+        $cipRaw = $a.ClientIPAddress; if (-not $cipRaw) { $cipRaw = $a.ClientIP }
+        if ($IPs -contains (Normalize-IP $cipRaw)) { $miaRaw.Add($r) }
+    }
+    Write-Host ("  page {0}: scanned +{1}, kept-from-suspect-IP {2}" -f $pageM, $nM, $miaRaw.Count)
+} while ($nM -gt 0 -and $pageM -lt $maxPages)
+if ($pageM -ge $maxPages) { Write-Warning "MailItemsAccessed pull hit the page cap (>50k scanned). Narrow the window." }
+$miaRaw = $miaRaw | Sort-Object Identity -Unique
+$miaRaw | Select-Object CreationDate,UserIds,Operations,RecordType,AuditData |
+    Export-Csv (Join-Path $OutputFolder 'ORG_IP_mailreads_RAW.csv') -NoTypeInformation
+
+foreach ($r in $miaRaw) {
+    $a = $null; try { $a = $r.AuditData | ConvertFrom-Json } catch { }
+    if (-not $a) { continue }
+    $t = [datetime]$a.CreationTime
+    $b = Get-Bucket $a.UserId
+    $b.MailReadEvents++
+    [void]$b.Workloads.Add('Exchange')
+    [void]$b.Operations.Add('MailItemsAccessed')
+    Bump-Time $b $t
+    $allEvents.Add([pscustomobject]@{ TimestampUTC=$t; Source='UAL-MailRead'; User=$a.UserId
+        Workload='Exchange'; Operation='MailItemsAccessed'; Result='' })
+}
+
 # --- 2) Entra sign-ins, org-wide, by IP (interactive + non-interactive) ---
 Write-Section "Entra Sign-ins (org-wide, by IP, last ~30d)"
 $startZ = $StartDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -174,7 +211,7 @@ foreach ($s in $siRaw) {
 # --- 3) Build per-user summary --------------------------------------------
 Write-Section "Scoping the blast radius"
 $summary = foreach ($b in $agg.Values) {
-    $accessed = ($b.SuccessSignIns -gt 0) -or ($b.UALEvents -gt 0)
+    $accessed = ($b.SuccessSignIns -gt 0) -or ($b.UALEvents -gt 0) -or ($b.MailReadEvents -gt 0)
     [pscustomobject]@{
         User           = $b.User
         Verdict        = if ($accessed) { 'ACCESSED' } elseif ($b.FailedSignIns -gt 0) { 'attempted' } else { 'seen' }
@@ -183,6 +220,7 @@ $summary = foreach ($b in $agg.Values) {
         SuccessSignIns = $b.SuccessSignIns
         FailedSignIns  = $b.FailedSignIns
         UALEvents      = $b.UALEvents
+        MailReadEvents = $b.MailReadEvents
         Workloads      = ($b.Workloads  -join ', ')
         Operations     = (($b.Operations | Select-Object -First 8) -join ', ')
     }
@@ -195,13 +233,14 @@ $allEvents | Sort-Object TimestampUTC |
 
 $accessedUsers = $summary | Where-Object { $_.Verdict -eq 'ACCESSED' -and $_.User -like '*@*' }
 $attemptUsers  = $summary | Where-Object { $_.Verdict -eq 'attempted' -and $_.User -like '*@*' }
+$readOnlyUsers = $accessedUsers | Where-Object { $_.SuccessSignIns -eq 0 -and $_.UALEvents -eq 0 -and $_.MailReadEvents -gt 0 }
 $accessedUsers.User | Set-Content (Join-Path $OutputFolder 'ORG_IP_ACCESSED_users.txt')
 
 # --- 4) Verdict ------------------------------------------------------------
 Write-Section "Verdict"
 Write-Host ("Distinct accounts touched by the IP set [{0}]: {1}" -f ($IPs -join ', '), (@($summary | Where-Object { $_.User -like '*@*' }).Count))
-Write-Host ("  Confirmed ACCESS (sign-in success or UAL activity): {0}" -f @($accessedUsers).Count) -ForegroundColor Yellow
-Write-Host ("  Failed attempts only:                               {0}" -f @($attemptUsers).Count)
+Write-Host ("  Confirmed ACCESS (sign-in success, UAL activity, or mail reads): {0}" -f @($accessedUsers).Count) -ForegroundColor Yellow
+Write-Host ("  Failed attempts only:                                           {0}" -f @($attemptUsers).Count)
 
 if (@($accessedUsers).Count -eq 0 -and @($attemptUsers).Count -gt 0) {
     Write-Host "`n>> No confirmed access. Pattern is attempts-only — possible spray that did not succeed." -ForegroundColor Green
@@ -209,7 +248,12 @@ if (@($accessedUsers).Count -eq 0 -and @($attemptUsers).Count -gt 0) {
     Write-Host ("`n>> Appears ISOLATED to: {0}" -f $accessedUsers.User) -ForegroundColor Green
 } else {
     Write-Host ("`n>> NOT ISOLATED — {0} accounts were accessed from this IP:" -f @($accessedUsers).Count) -ForegroundColor Red
-    $accessedUsers | Select-Object User,FirstSeenUTC,LastSeenUTC,SuccessSignIns,UALEvents | Format-Table -AutoSize
+    $accessedUsers | Select-Object User,FirstSeenUTC,LastSeenUTC,SuccessSignIns,UALEvents,MailReadEvents | Format-Table -AutoSize
+}
+if (@($readOnlyUsers).Count -gt 0) {
+    Write-Host ("`n>> READ-ONLY / RECON — {0} account(s) accessed from this IP show ONLY mail reads (no sign-in or other UAL activity from the IP):" -f @($readOnlyUsers).Count) -ForegroundColor Red
+    Write-Host "   The IP-only sweep would have missed these — MailItemsAccessed isn't returned by -IPAddresses. Consistent with token replay / quiet recon." -ForegroundColor DarkYellow
+    $readOnlyUsers | Select-Object User,FirstSeenUTC,LastSeenUTC,MailReadEvents | Format-Table -AutoSize
 }
 if (@($attemptUsers).Count -ge 10) {
     Write-Host ("Note: {0} accounts saw failed attempts from this IP — consistent with password spray." -f @($attemptUsers).Count) -ForegroundColor DarkYellow
@@ -220,7 +264,9 @@ Write-Host "  ORG_IP_user_summary.csv   <- per-account: accessed vs attempted (s
 Write-Host "  ORG_IP_ACCESSED_users.txt <- the accounts to respond on now"
 Write-Host "  ORG_IP_all_events.csv     <- every event from the IP, all users, chronological"
 Write-Host "  ORG_IP_ual_RAW.csv / ORG_IP_signins_RAW.csv  <- evidence (full detail)"
+Write-Host "  ORG_IP_mailreads_RAW.csv  <- MailItemsAccessed from the suspect IP(s) — what the actor read (incl. Subject / InternetMessageId in AuditData)"
 Write-Host "`nReminder: sign-ins cover only ~30 days; the UAL pull is what reveals May-era access across the org." -ForegroundColor DarkYellow
+Write-Host "Note: the MailItemsAccessed pass depends on MailItemsAccessed being in each mailbox's audit set (see docs/telemetry-licensing.md), and is high-volume on large tenants — narrow the window if it caps." -ForegroundColor DarkYellow
 
 if ($weOpenedExo)   { Disconnect-ExchangeOnline -Confirm:$false | Out-Null }
 if ($weOpenedGraph) { Disconnect-MgGraph | Out-Null }

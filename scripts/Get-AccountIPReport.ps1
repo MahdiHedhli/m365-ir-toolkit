@@ -26,6 +26,12 @@
     .\Get-AccountIPReport.ps1 -UserPrincipalName jdoe@client.com -StartDate '2026-05-01' -EndDate '2026-06-22'
     # Several accounts at once (cross-account IP correlation):
     .\Get-AccountIPReport.ps1 -UserPrincipalName jdoe@client.com,asmith@client.com -StartDate '2026-05-01' -EndDate '2026-06-22'
+
+.NOTE ON SIGN-IN
+    -UserPrincipalName is the account(s) being investigated. -AdminUpn is the admin you
+    authenticate as; pass it (e.g. -AdminUpn admin@tenant.com) to skip Connect-ExchangeOnline's
+    console email prompt and go straight to browser auth. If you've already run Connect-MgGraph /
+    Connect-ExchangeOnline in this session, the script reuses those sessions and won't prompt at all.
 #>
 
 [CmdletBinding()]
@@ -34,7 +40,7 @@ param(
     [datetime]$StartDate = (Get-Date).AddDays(-180),
     [datetime]$EndDate   = (Get-Date),
     [switch]$SkipEnrichment,
-    [string]$ConnectAs,           # admin UPN to sign in as; skips Connect-ExchangeOnline's console email prompt
+    [string]$AdminUpn,   # admin UPN to authenticate as; skips Connect-ExchangeOnline's console email prompt
     [string]$OutputFolder
 )
 
@@ -68,8 +74,8 @@ if (-not (Get-MgContext)) {
 } else { Write-Host "  Reusing Graph session: $((Get-MgContext).Account)" }
 $exoConn = $null; try { $exoConn = Get-ConnectionInformation -ErrorAction SilentlyContinue } catch {}
 if (-not $exoConn) {
-    if ($ConnectAs) { Connect-ExchangeOnline -UserPrincipalName $ConnectAs -ShowBanner:$false }
-    else                    { Connect-ExchangeOnline -ShowBanner:$false }
+    if ($AdminUpn) { Connect-ExchangeOnline -UserPrincipalName $AdminUpn -ShowBanner:$false }
+    else           { Connect-ExchangeOnline -ShowBanner:$false }
     $weOpenedExo = $true
 } else { Write-Host "  Reusing Exchange Online session: $($exoConn.UserPrincipalName)" }
 try {

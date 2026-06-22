@@ -27,6 +27,13 @@
 .EXAMPLE
     .\Trace-CompromiseTimeline.ps1 -SuspectIP 203.0.113.45 -UserPrincipalName jdoe@client.com `
         -StartDate '2026-05-01' -EndDate '2026-06-22'
+
+.NOTE ON SIGN-IN
+    -UserPrincipalName is the compromised account being traced. -AdminUpn is the admin you
+    authenticate as; pass it (e.g. -AdminUpn admin@tenant.com) to skip Connect-ExchangeOnline's
+    console email prompt and go straight to browser auth. If you've already run Connect-MgGraph /
+    Connect-ExchangeOnline in this session, the script reuses those sessions (topping up the
+    UserAuthenticationMethod.Read.All scope if needed) and won't prompt at all.
 #>
 
 [CmdletBinding()]
@@ -35,7 +42,7 @@ param(
     [Parameter(Mandatory)][string]$UserPrincipalName,
     [datetime]$StartDate = (Get-Date).AddDays(-180),   # UAL retention ceiling at Standard
     [datetime]$EndDate   = (Get-Date),
-    [string]$ConnectAs,           # admin UPN to sign in as; skips Connect-ExchangeOnline's console email prompt
+    [string]$AdminUpn,   # admin UPN to authenticate as; skips Connect-ExchangeOnline's console email prompt
     [string]$OutputFolder
 )
 
@@ -74,8 +81,8 @@ if (-not $ctx) {
 } else { Write-Host "  Reusing Graph session: $($ctx.Account)" }
 $exoConn = $null; try { $exoConn = Get-ConnectionInformation -ErrorAction SilentlyContinue } catch {}
 if (-not $exoConn) {
-    if ($ConnectAs) { Connect-ExchangeOnline -UserPrincipalName $ConnectAs -ShowBanner:$false }
-    else                    { Connect-ExchangeOnline -ShowBanner:$false }
+    if ($AdminUpn) { Connect-ExchangeOnline -UserPrincipalName $AdminUpn -ShowBanner:$false }
+    else           { Connect-ExchangeOnline -ShowBanner:$false }
     $weOpenedExo = $true
 } else { Write-Host "  Reusing Exchange Online session: $($exoConn.UserPrincipalName)" }
 
