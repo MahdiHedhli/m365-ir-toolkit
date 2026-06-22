@@ -1,0 +1,14 @@
+# IR output folders — contain client log data, never commit
+IR_*/
+IP_report_*/
+TIMELINE_*.csv
+ORG_IP_*.csv
+ORG_IP_*.txt
+account_*.csv
+shared_IP_rollup.csv
+*_RAW.csv
+
+# PowerShell / OS
+*.ps1xml
+.DS_Store
+Thumbs.db
